@@ -50,6 +50,19 @@ MPReachAttr::~MPReachAttr() {
  */
 void MPReachAttr::parseReachNlriAttr(int attr_len, u_char *data, UpdateMsg::parsed_update_data &parsed_data) {
     mp_reach_nlri nlri;
+    
+    // Validate initial attribute length
+    if (attr_len < 0 || attr_len > 65535) {
+        LOG_NOTICE("%s: MP_REACH NLRI attribute length is invalid (%d), skipping parse", peer_addr.c_str(), attr_len);
+        return;
+    }
+    
+    // Check minimum required length (AFI + SAFI + NH_LEN + RESERVED = 5 bytes)
+    if (attr_len < 5) {
+        LOG_NOTICE("%s: MP_REACH NLRI attribute length too short (%d), skipping parse", peer_addr.c_str(), attr_len);
+        return;
+    }
+    
     /*
      * Set the MP NLRI struct
      */
@@ -59,7 +72,22 @@ void MPReachAttr::parseReachNlriAttr(int attr_len, u_char *data, UpdateMsg::pars
 
     nlri.safi = *data++; attr_len--;                 // Set the SAFI - 1 octet
     nlri.nh_len = *data++; attr_len--;              // Set the next-hop length - 1 octet
+    
+    // Validate next-hop length doesn't exceed remaining attribute length
+    if (nlri.nh_len > attr_len) {
+        LOG_NOTICE("%s: MP_REACH NLRI next-hop length (%d) exceeds remaining attribute length (%d), skipping parse", 
+                   peer_addr.c_str(), nlri.nh_len, attr_len);
+        return;
+    }
+    
     nlri.next_hop = data;  data += nlri.nh_len; attr_len -= nlri.nh_len;    // Set pointer position for nh data
+    
+    // Check for reserved byte
+    if (attr_len < 1) {
+        LOG_NOTICE("%s: MP_REACH NLRI missing reserved byte, skipping parse", peer_addr.c_str());
+        return;
+    }
+    
     nlri.reserved = *data++; attr_len--;             // Set the reserve octet
     nlri.nlri_data = data;                          // Set pointer position for nlri data
     nlri.nlri_len = attr_len;                       // Remaining attribute length is for NLRI data
@@ -203,6 +231,12 @@ void MPReachAttr::parseAfi_IPv4IPv6(bool isIPv4, mp_reach_nlri &nlri, UpdateMsg:
         case bgp::BGP_SAFI_MPLS: {
 
             if (isIPv4) {
+                // Validate next-hop length before adjustment
+                if (nlri.nh_len < 8) {
+                    LOG_NOTICE("%s: MP_REACH NLRI MPLS IPv4 next-hop length too short (%d), skipping parse", 
+                               peer_addr.c_str(), nlri.nh_len);
+                    return;
+                }
                 //Next hop encoded in 12 bytes, last 4 bytes = IPv4
                 nlri.next_hop += 8;
                 nlri.nh_len -= 8;
@@ -274,13 +308,31 @@ void MPReachAttr::parseNlriData_IPv4IPv6(bool isIPv4, u_char *data, uint16_t len
         } else
             tuple.path_id = 0;
 
+        // Check if we have at least 1 byte for prefix length
+        if (read_size >= len) {
+            LOG_NOTICE("%s: MP_REACH NLRI IPv4/IPv6 parsing exceeded buffer at prefix length", peer_addr.c_str());
+            break;
+        }
+
         // set the address in bits length
         tuple.len = *data++;
+
+        // Validate prefix length is reasonable (max 32 for IPv4, 128 for IPv6)
+        if ((isIPv4 && tuple.len > 32) || (!isIPv4 && tuple.len > 128)) {
+            LOG_NOTICE("%s: MP_REACH NLRI IPv4/IPv6 invalid prefix length (%d), skipping", peer_addr.c_str(), tuple.len);
+            break;
+        }
 
         // Figure out how many bytes the bits requires
         addr_bytes = tuple.len / 8;
         if (tuple.len % 8)
            ++addr_bytes;
+
+        // Check if we have enough data for the prefix
+        if (read_size + addr_bytes > len) {
+            LOG_NOTICE("%s: MP_REACH NLRI IPv4/IPv6 prefix data exceeds buffer", peer_addr.c_str());
+            break;
+        }
 
         memcpy(ip_raw, data, addr_bytes);
         data += addr_bytes;
@@ -347,15 +399,41 @@ void MPReachAttr::parseNlriData_LabelIPv4IPv6(bool isIPv4, u_char *data, uint16_
 
         bzero(ip_raw, sizeof(ip_raw));
 
+        // Check if we have at least 1 byte for prefix length
+        if (read_size >= len) {
+            LOG_NOTICE("%s: MP_REACH NLRI Label IPv4/IPv6 parsing exceeded buffer at prefix length", peer_addr.c_str());
+            break;
+        }
+
         // set the address in bits length
         tuple.len = *data++;
+
+        // Validate prefix length is reasonable (max 32+24 for IPv4, 128+24 for IPv6, +64 for VPN RD)
+        uint16_t max_len = (isIPv4 ? 32 : 128) + 24 + (isVPN ? 64 : 0);
+        if (tuple.len > max_len) {
+            LOG_NOTICE("%s: MP_REACH NLRI Label IPv4/IPv6 invalid prefix length (%d), skipping", peer_addr.c_str(), tuple.len);
+            break;
+        }
 
         // Figure out how many bytes the bits requires
         addr_bytes = tuple.len / 8;
         if (tuple.len % 8)
            ++addr_bytes;
 
+        // Check if we have enough data
+        if (read_size + addr_bytes > len) {
+            LOG_NOTICE("%s: MP_REACH NLRI Label IPv4/IPv6 data exceeds buffer", peer_addr.c_str());
+            break;
+        }
+
         label_bytes = decodeLabel(data, addr_bytes, tuple.labels);
+
+        // Validate label_bytes doesn't exceed addr_bytes
+        if (label_bytes > addr_bytes) {
+            LOG_NOTICE("%s: MP_REACH NLRI Label IPv4/IPv6 label bytes (%d) exceeds address bytes (%d)", 
+                       peer_addr.c_str(), label_bytes, addr_bytes);
+            break;
+        }
 
         tuple.len -= (8 * label_bytes);      // Update prefix len to not include the label(s)
         data += label_bytes;               // move data pointer past labels
@@ -370,11 +448,23 @@ void MPReachAttr::parseNlriData_LabelIPv4IPv6(bool isIPv4, u_char *data, uint16_
             data += 8;
             addr_bytes -= 8;
             read_size += 8;
+            
+            // Check for underflow before subtraction
+            if (tuple.len < 64) {
+                LOG_NOTICE("%s: MP_REACH NLRI VPN prefix length underflow", peer_addr.c_str());
+                break;
+            }
             tuple.len -= 64;
         }
 
         // Parse the prefix if it isn't a default route
         if (addr_bytes > 0) {
+            // Validate addr_bytes doesn't exceed remaining buffer
+            if (read_size + addr_bytes > len) {
+                LOG_NOTICE("%s: MP_REACH NLRI Label IPv4/IPv6 prefix exceeds buffer", peer_addr.c_str());
+                break;
+            }
+            
             memcpy(ip_raw, data, addr_bytes);
             data += addr_bytes;
             read_size += addr_bytes;
@@ -426,8 +516,13 @@ inline uint16_t MPReachAttr::decodeLabel(u_char *data, uint16_t len, std::string
 
     u_char *data_ptr = data;
 
+    // Validate minimum length for at least one label
+    if (len < 3) {
+        return 0;
+    }
+
     // the label is 3 octets long
-    while (read_size <= len)
+    while (read_size + 3 <= len)
     {
         bzero(&label, sizeof(label));
 

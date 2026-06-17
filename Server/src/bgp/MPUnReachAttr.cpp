@@ -13,6 +13,7 @@
 
 
 #include <arpa/inet.h>
+#include <limits>
 
 namespace bgp_msg {
 
@@ -50,6 +51,23 @@ MPUnReachAttr::~MPUnReachAttr() {
  */
 void MPUnReachAttr::parseUnReachNlriAttr(int attr_len, u_char *data, bgp_msg::UpdateMsg::parsed_update_data &parsed_data) {
     mp_unreach_nlri nlri;
+    
+    /*
+     * Validate attr_len is within reasonable bounds
+     */
+    if (attr_len < 0 || attr_len > 65535) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI attribute length is invalid (%d), skipping parse", peer_addr.c_str(), attr_len);
+        return;
+    }
+    
+    /*
+     * Minimum length check: AFI (2 bytes) + SAFI (1 byte) = 3 bytes
+     */
+    if (attr_len < 3) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI attribute length is too short (%d), skipping parse", peer_addr.c_str(), attr_len);
+        return;
+    }
+    
     /*
      * Set the MP Unreach NLRI struct
      */
