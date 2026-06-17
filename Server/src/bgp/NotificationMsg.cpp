@@ -180,7 +180,7 @@ bool NotificationMsg::parseNotify(u_char *data, size_t size, parsed_notify_msg &
         }
 
         default : {
-            sprintf(parsed_msg.error_text, "Unknown notification type [%d]", parsed_msg.error_code);
+            snprintf(parsed_msg.error_text, sizeof(parsed_msg.error_text), "Unknown notification type [%d]", parsed_msg.error_code);
             break;
         }
     }
