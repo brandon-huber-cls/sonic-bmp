@@ -12,6 +12,7 @@
 #include <sstream>
 #include <iostream>
 #include <arpa/inet.h>
+#include <limits>
 
 #include "UpdateMsg.h"
 #include "ExtCommunity.h"
@@ -53,8 +54,20 @@ namespace bgp_msg {
         std::string decodeStr = "";
         extcomm_hdr ec_hdr;
 
+        // Validate attr_len is non-negative and within reasonable bounds
+        if (attr_len < 0 || attr_len > 65535) {
+            LOG_NOTICE("%s: Parsing extended community len=%d is invalid, must be between 0 and 65535", peer_addr.c_str(), attr_len);
+            return;
+        }
+
         if ( (attr_len % 8) ) {
             LOG_NOTICE("%s: Parsing extended community len=%d is invalid, expecting divisible by 8", peer_addr.c_str(), attr_len);
+            return;
+        }
+
+        // Additional safety check to prevent potential overflow in loop
+        if (attr_len > 0 && data == NULL) {
+            LOG_NOTICE("%s: Parsing extended community with NULL data pointer", peer_addr.c_str());
             return;
         }
 
@@ -62,6 +75,12 @@ namespace bgp_msg {
          * Loop through consecutive entries
          */
         for (int i = 0; i < attr_len; i += 8) {
+            // Verify we won't overflow on next iteration
+            if (i > attr_len - 8) {
+                LOG_NOTICE("%s: Extended community parsing stopped due to insufficient data", peer_addr.c_str());
+                break;
+            }
+
             // Setup extended community header
             ec_hdr.high_type = data[0];
             ec_hdr.low_type  = data[1];
@@ -584,8 +603,20 @@ namespace bgp_msg {
 
         LOG_INFO("%s: Parsing IPv6 extended community len=%d", peer_addr.c_str(), attr_len);
 
+        // Validate attr_len is non-negative and within reasonable bounds
+        if (attr_len < 0 || attr_len > 65535) {
+            LOG_NOTICE("%s: Parsing IPv6 extended community len=%d is invalid, must be between 0 and 65535", peer_addr.c_str(), attr_len);
+            return;
+        }
+
         if ( (attr_len % 20) ) {
             LOG_NOTICE("%s: Parsing IPv6 extended community len=%d is invalid, expecting divisible by 20", peer_addr.c_str(), attr_len);
+            return;
+        }
+
+        // Additional safety check to prevent potential overflow in loop
+        if (attr_len > 0 && data == NULL) {
+            LOG_NOTICE("%s: Parsing IPv6 extended community with NULL data pointer", peer_addr.c_str());
             return;
         }
 
@@ -593,6 +624,12 @@ namespace bgp_msg {
          * Loop through consecutive entries
          */
         for (int i = 0; i < attr_len; i += 20) {
+            // Verify we won't overflow on next iteration
+            if (i > attr_len - 20) {
+                LOG_NOTICE("%s: IPv6 extended community parsing stopped due to insufficient data", peer_addr.c_str());
+                break;
+            }
+
             // Setup extended community header
             ec_hdr.high_type = data[0];
             ec_hdr.low_type = data[1];
@@ -611,6 +648,9 @@ namespace bgp_msg {
                             ec_hdr.high_type, ec_hdr.low_type);
                     break;
             }
+
+            // Move data pointer to next entry
+            data += 20;
         }
     }
 
@@ -633,7 +673,7 @@ namespace bgp_msg {
         char                ipv6_char[40] = {0};
 
         memcpy(ipv6_raw, ec_hdr.value, 16);
-        if (inet_ntop(AF_INET6, ipv6_raw, ipv6_char, sizeof(ipv6_char)) != NULL)
+        if (inet_ntop(AF_INET6, ipv6_raw, ipv6_char, sizeof(ipv6_char)) == NULL)
             return "";
 
         memcpy(&val_16b, ec_hdr.value + 16, 2);
