@@ -59,6 +59,7 @@ Config::Config() {
     initial_router_time = 60;
     calculate_baseline  = true;
     pat_enabled		= false;
+    pat_validate_source_ip = true;
     bzero(admin_id, sizeof(admin_id));
 
     /*
@@ -151,8 +152,10 @@ void Config::parseBase(const YAML::Node &node) {
 
             if (value.compare("hostname") == 0) {
                 gethostname(admin_id, sizeof(admin_id));
+                admin_id[sizeof(admin_id) - 1] = '\0';
             } else {
-                std::strncpy(admin_id, value.c_str(), sizeof(admin_id));
+                std::strncpy(admin_id, value.c_str(), sizeof(admin_id) - 1);
+                admin_id[sizeof(admin_id) - 1] = '\0';
             }
 
             if (debug_general)
@@ -303,10 +306,54 @@ void Config::parseBase(const YAML::Node &node) {
                 pat_enabled = node["startup"]["pat_enabled"].as<bool>();
 
                 if (debug_general)
-                    std::cout << "   Config: pat_enabled: " << calculate_baseline << std::endl;
+                    std::cout << "   Config: pat_enabled: " << pat_enabled << std::endl;
+
+                // Log security warning when PAT is enabled
+                if (pat_enabled) {
+                    std::cout << "   WARNING: PAT mode enabled - router identity is based on BMP INIT message content." << std::endl;
+                    std::cout << "   WARNING: Ensure proper network security controls are in place to prevent spoofing." << std::endl;
+                }
 
             } catch (YAML::TypedBadConversion<bool> err) {
                 printWarning("pat_enabled is not of type bool", node["startup"]["pat_enabled"]);
+            }
+        }
+
+        if (node["startup"]["pat_validate_source_ip"]) {
+            try {
+                pat_validate_source_ip = node["startup"]["pat_validate_source_ip"].as<bool>();
+
+                if (debug_general)
+                    std::cout << "   Config: pat_validate_source_ip: " << pat_validate_source_ip << std::endl;
+
+            } catch (YAML::TypedBadConversion<bool> err) {
+                printWarning("pat_validate_source_ip is not of type bool", node["startup"]["pat_validate_source_ip"]);
+            }
+        }
+
+        // Parse allowed source IPs for PAT mode
+        if (node["startup"]["pat_allowed_source_ips"] && 
+            node["startup"]["pat_allowed_source_ips"].Type() == YAML::NodeType::Sequence) {
+            
+            pat_allowed_source_ips.clear();
+            
+            for (std::size_t i = 0; i < node["startup"]["pat_allowed_source_ips"].size(); i++) {
+                try {
+                    std::string ip = node["startup"]["pat_allowed_source_ips"][i].as<std::string>();
+                    pat_allowed_source_ips.push_back(ip);
+                    
+                    if (debug_general)
+                        std::cout << "   Config: pat_allowed_source_ips: " << ip << std::endl;
+                        
+                } catch (YAML::TypedBadConversion<std::string> err) {
+                    printWarning("pat_allowed_source_ips entry is not of type string", 
+                                node["startup"]["pat_allowed_source_ips"][i]);
+                }
+            }
+            
+            if (pat_enabled && pat_validate_source_ip && pat_allowed_source_ips.empty()) {
+                std::cout << "   WARNING: PAT mode enabled with source IP validation but no allowed IPs configured." << std::endl;
+                std::cout << "   WARNING: All connections will be rejected unless pat_allowed_source_ips is configured." << std::endl;
             }
         }
     }
@@ -654,234 +701,4 @@ void Config::parseTopics(const YAML::Node &node) {
 /**
  * Parse the mapping configuration
  *
- * \param [in] node     Reference to the yaml NODE
- */
-void Config::parseMapping(const YAML::Node &node) {
-    if (node["groups"] and node["groups"].Type() == YAML::NodeType::Map) {
-
-        if (node["groups"]["router_group"] and node["groups"]["router_group"].Type() == YAML::NodeType::Sequence) {
-
-            std::string name;
-            for (std::size_t i = 0; i < node["groups"]["router_group"].size(); i++) {
-
-                if (node["groups"]["router_group"][i].Type() == YAML::NodeType::Map) {
-                    const YAML::Node &cur_node = node["groups"]["router_group"][i];
-
-                    name = cur_node["name"].as<std::string>();
-
-                    if (debug_general)
-                        std::cout << "   Config: mappings.groups.router_group name = " << name << std::endl;
-
-                    if (debug_general) std::cout << "   Config: getting regexp_hostname list" << std::endl;
-                    if (cur_node["regexp_hostname"] and
-                        cur_node["regexp_hostname"].Type() == YAML::NodeType::Sequence) {
-
-                        parseRegexpList(cur_node["regexp_hostname"], name, match_router_group_by_name);
-
-                    } else if (cur_node["regexp_hostname"])
-                        throw "Invalid mapping.groups.router_group.regexp_hostname, should be of type list/sequence";
-
-
-                    if (debug_general) std::cout << "   Config: getting prefix_range list" << std::endl;
-                    if (cur_node["prefix_range"] and cur_node["prefix_range"].Type() == YAML::NodeType::Sequence) {
-
-                        parsePrefixList(cur_node["prefix_range"], name, match_router_group_by_ip);
-
-                    } else if (cur_node["prefix_range"])
-                        throw "Invalid mapping.groups.router_group.prefix_range, should be of type list/sequence";
-                }
-            }
-        }
-
-        if (node["groups"]["peer_group"] and node["groups"]["peer_group"].Type() == YAML::NodeType::Sequence) {
-
-            std::string name;
-            for (std::size_t i = 0; i < node["groups"]["peer_group"].size(); i++) {
-
-                if (node["groups"]["peer_group"][i].Type() == YAML::NodeType::Map) {
-                    const YAML::Node &cur_node = node["groups"]["peer_group"][i];
-
-                    name = cur_node["name"].as<std::string>();
-
-                    if (debug_general)
-                        std::cout << "   Config: mappings.groups.peer_group name = " << name << std::endl;
-
-                    if (debug_general) std::cout << "   Config: getting regexp_hostname list" << std::endl;
-                    if (cur_node["regexp_hostname"] and
-                        cur_node["regexp_hostname"].Type() == YAML::NodeType::Sequence) {
-
-                        parseRegexpList(cur_node["regexp_hostname"], name, match_peer_group_by_name);
-
-                    } else if (cur_node["regexp_hostname"])
-                        throw "Invalid mapping.groups.peer_group.regexp_hostname, should be of type list/sequence";
-
-
-                    if (debug_general) std::cout << "   Config: getting prefix_range list" << std::endl;
-                    if (cur_node["prefix_range"] and cur_node["prefix_range"].Type() == YAML::NodeType::Sequence) {
-
-                        parsePrefixList(cur_node["prefix_range"], name, match_peer_group_by_ip);
-
-                    } else if (cur_node["prefix_range"])
-                        throw "Invalid mapping.groups.peer_group.prefix_range, should be of type list/sequence";
-
-                    if (debug_general) std::cout << "   Config: getting asn list" << std::endl;
-                    if (cur_node["asn"] and cur_node["asn"].Type() == YAML::NodeType::Sequence) {
-
-                        for (std::size_t i = 0; i < cur_node["asn"].size(); i++) {
-
-                            if (cur_node["asn"][i].Type() == YAML::NodeType::Scalar) {
-                                try {
-                                    uint32_t asn = cur_node["asn"][i].as<std::uint32_t>();
-                                    match_peer_group_by_asn[name].push_back(asn);
-                                } catch (YAML::TypedBadConversion<std::string> err) {
-                                    printWarning(
-                                            "mapping.groups.peer_group.asn int parse error. ASN must be uint32: ",
-                                            cur_node["asn"][i]);
-                                }
-                            }
-                        }
-
-                    } else if (cur_node["asn"])
-                        throw "Invalid mapping.groups.peer_group.asn, should be of type list/sequence";
-
-                }
-            }
-        }
-
-    }
-}
-
-/**
- * Parse matching regexp list and update the provided map with compiled expressions
- *
- * \param [in]  node     regex list node - should be of type sequence
- * \param [in]  name     group name, used as the map key
- * \param [out] map      Reference to the map that will be updated with the compiled expressions
- */
-void Config::parseRegexpList(const YAML::Node &node, std::string name,
-                             std::map<std::string, std::list<match_type_regex>> &map) {
-
-    match_type_regex value;
-
-    for (std::size_t i = 0; i < node.size(); i++) {
-        if (node[i].Type() == YAML::NodeType::Scalar) {
-
-            try {
-                value.regexp = sregex::compile(node[i].as<std::string>(),
-                                               regex_constants::icase | regex_constants::not_dot_newline
-                                               | regex_constants::optimize | regex_constants::nosubs);
-                map[name].push_back(value);
-
-            } catch (boost::exception_detail::clone_impl<boost::xpressive::regex_error> err) {
-                throw "Invalid regular expression pattern";
-            }
-
-            if (debug_general)
-                std::cout << "   Config: compiled regexp hostname: " << node[i].as<std::string>() << std::endl;
-        }
-    }
-}
-
-/**
- * Parse matching prefix_range list and update the provided map with compiled expressions
- *
- * \param [in]  node     prefix_range list node - should be of type sequence
- * \param [in]  name     group name, used as the map key
- * \param [out] map      Reference to the map that will be updated with ip addresses
- */
-void Config::parsePrefixList(const YAML::Node &node, std::string name,
-                             std::map<std::string, std::list<match_type_ip>> &map) {
-
-    match_type_ip value;
-    char *prefix_full;
-    char *prefix, *bits;
-
-    for (std::size_t i = 0; i < node.size(); i++) {
-        bzero(value.prefix, sizeof(value.prefix));
-
-        if (node[i].Type() == YAML::NodeType::Scalar) {
-
-            // Split the prefix/bits
-            prefix_full = strdup(node[i].as<std::string>().c_str());
-
-            if (debug_general)
-                std::cout << "   Config: parsing prefix range entry: " << prefix_full << std::endl;
-
-            prefix = strtok(prefix_full, "/");
-            bits = strtok(NULL, "/");
-
-            if (prefix == NULL or bits == NULL)
-                throw "Missing prefix range bits value";
-
-            value.bits = atoi(bits);
-
-            if (node[i].as<std::string>().find_first_of(".") != std::string::npos) {
-                value.isIPv4 = true;
-
-                if (value.bits < 1 or value.bits > 32)
-                    throw "Invalid prefix range bits value, must be 1 - 32";
-            } else {
-                value.isIPv4 = false;
-
-                if (value.bits < 1 or value.bits > 128)
-                    throw "Invalid prefix range bits value, must be 1 - 128";
-            }
-
-
-
-            // add the inet address
-            inet_pton((value.isIPv4 ? AF_INET : AF_INET6), prefix, &value.prefix);
-
-            map[name].push_back(value);
-
-            if (debug_general)
-                printf("   Config: added prefix: %s %s/%d\n", (value.isIPv4 ? "IPv4" : "IPv6"), prefix,
-                       value.bits);
-
-            free(prefix_full);          // free strdup
-        }
-    }
-}
-
-/**
- * Perform topic name substitutions based on topic variables
- */
-void Config::topicSubstitutions() {
-    // not the fastest update, but this is fine since it's only done on startup
-    for (topic_vars_map_iter v_it = topic_vars_map.begin(); v_it != topic_vars_map.end(); ++v_it) {
-        std::string var = "{";
-        var += v_it->first;
-        var += "}";
-
-        for (topic_names_map_iter n_it = topic_names_map.begin(); n_it != topic_names_map.end(); ++n_it) {
-            boost::replace_all(n_it->second, var, v_it->second);
-        }
-    }
-}
-
-/**
- * print warning message for parsing node
- *
- * \param [in] msg      Warning message
- * \param [in] node     Offending node that caused the warning
- */
-void Config::printWarning(const std::string msg, const YAML::Node &node) {
-    std::string type;
-
-    switch (node.Type()) {
-        case YAML::NodeType::Null:
-            type = "Null";
-            break;
-        case YAML::NodeType::Scalar:
-            type = "Scalar";
-            break;
-        case YAML::NodeType::Sequence:
-            type = "Sequence";
-            break;
-        default:
-            type = "Unknown";
-            break;
-    }
-    std::cout << "WARN: " << msg << " : " << type << " = " << node.Scalar() << std::endl ;
-}
-
+ * \param [in]
