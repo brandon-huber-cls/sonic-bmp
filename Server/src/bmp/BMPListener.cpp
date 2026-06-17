@@ -18,6 +18,7 @@
 #include <iostream>
 #include <cerrno>
 #include <string>
+#include <algorithm>
 
 #include <poll.h>
 #include <MsgBusInterface.hpp>
@@ -140,6 +141,34 @@ void BMPListener::open_socket(bool ipv4, bool ipv6) {
 }
 
 /**
+ * Check if client IP is in the allowed list
+ *
+ * \param [in] client_ip    Client IP address string
+ *
+ * \return True if allowed, false otherwise
+ */
+bool BMPListener::isClientAllowed(const char *client_ip) {
+    // If no ACL is configured, allow all connections (backward compatibility)
+    if (cfg->bmp_acl.empty()) {
+        LOG_WARN("No BMP ACL configured - allowing connection from %s (SECURITY RISK)", client_ip);
+        return true;
+    }
+
+    string ip_str(client_ip);
+    
+    // Check if client IP is in the allowed list
+    for (const auto& allowed_ip : cfg->bmp_acl) {
+        if (ip_str == allowed_ip) {
+            LOG_INFO("Connection from %s allowed by ACL", client_ip);
+            return true;
+        }
+    }
+
+    LOG_WARN("Connection from %s DENIED - not in ACL", client_ip);
+    return false;
+}
+
+/**
  * Wait and Accept new/pending connections
  *
  * Will accept both IPv4 and IPv6 (if configured), but only one will be accepted
@@ -253,6 +282,14 @@ void BMPListener::accept_connection(ClientInfo &c, bool isIPv4) {
     } else {
         inet_ntop(AF_INET6,  &v6_addr->sin6_addr, c.c_ip, sizeof(c.c_ip));
         snprintf(c.c_port, sizeof(c.c_port), "%hu", ntohs(v6_addr->sin6_port));
+    }
+
+    // Check if client is allowed by ACL
+    if (!isClientAllowed(c.c_ip)) {
+        LOG_WARN("Rejecting connection from %s:%s - not in allowed ACL", c.c_ip, c.c_port);
+        close(c.c_sock);
+        c.c_sock = -1;
+        throw "Connection rejected: IP not in allowed ACL";
     }
 
     // Get the server source address and port

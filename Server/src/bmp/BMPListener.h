@@ -14,6 +14,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ctime>
+#include <vector>
+#include <string>
 
 #include "Logger.h"
 #include "Config.h"
@@ -31,6 +33,7 @@ class BMPListener {
     int          sockv6;                         ///< IPv6 listening socket
     sockaddr_in  svr_addr;                       ///< Server v4 address
     sockaddr_in6 svr_addrv6;                     ///< Server v6 address
+    vector<string> allowed_ips;                  ///< List of allowed source IP addresses/ranges
 
 public:
     /**
@@ -115,6 +118,25 @@ private:
      * \param [in]   isIPv4  True to indicate if IPv4, false if IPv6
      */
     void accept_connection(ClientInfo &c, bool isIPv4);
+
+    /**
+     * Check if client IP is allowed to connect
+     *
+     * \param [in] client_ip    Client IP address to check
+     *
+     * \return True if IP is allowed, false otherwise
+     */
+    bool is_ip_allowed(const char *client_ip);
+
+    /**
+     * Parse IP address range in CIDR notation
+     *
+     * \param [in] cidr         CIDR notation string (e.g., "192.168.1.0/24")
+     * \param [in] client_ip    Client IP address to check
+     *
+     * \return True if client IP is in the range, false otherwise
+     */
+    bool match_cidr(const string &cidr, const char *client_ip);
 
 };
 
