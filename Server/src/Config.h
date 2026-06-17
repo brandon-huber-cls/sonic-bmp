@@ -30,7 +30,7 @@ using namespace boost::xpressive;
  */
 class Config {
 public:
-    u_char      c_hash_id[16];            ///< Collector Hash ID (raw format)
+    u_char      c_hash_id[32];            ///< Collector Hash ID (raw format) - SHA-256 hash
     char        admin_id[64];             ///< Admin ID
 
     std::string kafka_brokers;            ///< metadata.broker.list

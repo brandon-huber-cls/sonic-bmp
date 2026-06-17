@@ -29,7 +29,7 @@
 #include <csignal>
 #include <cstring>
 #include <sys/stat.h>
-#include "md5.h"
+#include <openssl/sha.h>
 
 using namespace std;
 
@@ -446,15 +446,12 @@ void runServer(Config &cfg) {
     LOG_INFO("Initializing server");
 
     try {
-        // Define the collector hash
-        MD5 hash;
-        hash.update((unsigned char *)cfg.admin_id, strlen(cfg.admin_id));
-        hash.finalize();
+        // Define the collector hash using SHA-256
+        unsigned char hash_output[SHA256_DIGEST_LENGTH];
+        SHA256((unsigned char *)cfg.admin_id, strlen(cfg.admin_id), hash_output);
 
-        // Save the hash
-        unsigned char *hash_raw = hash.raw_digest();
-        memcpy(cfg.c_hash_id, hash_raw, 16);
-        delete[] hash_raw;
+        // Save the hash (use first 16 bytes for backward compatibility with hash_id size)
+        memcpy(cfg.c_hash_id, hash_output, 16);
 
 #ifndef REDIS_ENABLED
         // Kafka connection
@@ -683,4 +680,3 @@ int main(int argc, char **argv) {
 
 	return 0;
 }
-
