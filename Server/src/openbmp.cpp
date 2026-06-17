@@ -29,6 +29,7 @@
 #include <csignal>
 #include <cstring>
 #include <sys/stat.h>
+#include <mutex>
 #include "md5.h"
 
 using namespace std;
@@ -44,8 +45,9 @@ bool        run             = true;                 // Indicates if server shoul
 bool        run_foreground  = false;                // Indicates if server should run in forground
 
 
-// Global thread list
+// Global thread list with mutex protection
 vector<ThreadMgmt *> thr_list(0);
+std::mutex thr_list_mutex;
 
 static Logger *logger;                              // Local source logger reference
 
@@ -155,16 +157,18 @@ void signal_handler(int signum)
         case SIGPIPE :
         case SIGINT  :
         case SIGCHLD : // Handle the child cleanup
-
-            for (size_t i=0; i < thr_list.size(); i++) {
-                if (thr_list.at(i)->running) {
-                    pthread_cancel(thr_list.at(i)->thr);
-                    thr_list.at(i)->running = false;
-                    pthread_join(thr_list.at(i)->thr, NULL);
+            {
+                std::lock_guard<std::mutex> lock(thr_list_mutex);
+                for (size_t i=0; i < thr_list.size(); i++) {
+                    if (thr_list.at(i)->running) {
+                        pthread_cancel(thr_list.at(i)->thr);
+                        thr_list.at(i)->running = false;
+                        pthread_join(thr_list.at(i)->thr, NULL);
+                    }
                 }
-            }
 
-            thr_list.clear();
+                thr_list.clear();
+            }
 
             LOG_INFO("Done closing all active BMP connections");
 
@@ -374,6 +378,7 @@ void collector_update_msg(Config &cfg,
 
     snprintf(oc.admin_id, sizeof(oc.admin_id), "%s", cfg.admin_id);
 
+    std::lock_guard<std::mutex> lock(thr_list_mutex);
     oc.router_count = thr_list.size();
 
     string router_ips;
@@ -408,6 +413,7 @@ void collector_update_msg(msgBus_kafka *kafka, Config &cfg,
 
     snprintf(oc.admin_id, sizeof(oc.admin_id), "%s", cfg.admin_id);
 
+    std::lock_guard<std::mutex> lock(thr_list_mutex);
     oc.router_count = thr_list.size();
 
     string router_ips;
@@ -478,51 +484,56 @@ void runServer(Config &cfg) {
             /*
              * Check for any stale threads/connections
              */
-             for (size_t i=0; i < thr_list.size(); i++) {
+            {
+                std::lock_guard<std::mutex> lock(thr_list_mutex);
+                for (size_t i=0; i < thr_list.size(); i++) {
 
-                // If thread is not running, it means it terminated, so close it out
-                if (!thr_list.at(i)->running) {
+                    // If thread is not running, it means it terminated, so close it out
+                    if (!thr_list.at(i)->running) {
 
-                    // Join the thread to clean up
-                    pthread_join(thr_list.at(i)->thr, NULL);
-                    --active_connections;
+                        // Join the thread to clean up
+                        pthread_join(thr_list.at(i)->thr, NULL);
+                        --active_connections;
 
-                    if (!thr_list.at(i)->baselineTimeout)
-                        --concurrent_routers;
+                        if (!thr_list.at(i)->baselineTimeout)
+                            --concurrent_routers;
 
-                    // free the vector entry
-                    delete thr_list.at(i);
-                    thr_list.erase(thr_list.begin() + i);
+                        // free the vector entry
+                        delete thr_list.at(i);
+                        thr_list.erase(thr_list.begin() + i);
 
 #ifndef REDIS_ENABLED
-                    collector_update_msg(kafka, cfg,
-                                         MsgBusInterface::COLLECTOR_ACTION_CHANGE);
+                        collector_update_msg(kafka, cfg,
+                                             MsgBusInterface::COLLECTOR_ACTION_CHANGE);
 #else
-                    collector_update_msg(cfg,
-                                         MsgBusInterface::COLLECTOR_ACTION_CHANGE);
+                        collector_update_msg(cfg,
+                                             MsgBusInterface::COLLECTOR_ACTION_CHANGE);
 #endif
-                }
-
-		        else if (!thr_list.at(i)->baselineTimeout) {
-
-                    int initial_time = cfg.initial_router_time;
-                    string hash(reinterpret_cast<char*>(thr_list.at(i)->client.hash_id), 16);
-
-                    //if calculate_baseline is true and the baseline time for the router is calculated, use the baseline time
-                    if (cfg.calculate_baseline && cfg.router_baseline_time.find(hash) != cfg.router_baseline_time.end())
-                        initial_time = cfg.router_baseline_time[hash];
-
-                    timeval now;
-                    gettimeofday(&now, NULL);
-
-                    //If past the baseline time, decrement concurrent router count
-                    if(now.tv_sec - thr_list.at(i)->client.startTime.tv_sec >= initial_time) {
-                        --concurrent_routers;
-                    thr_list.at(i)->baselineTimeout = true;		// Indicating that this router is not counted in the concurrent routers count
                     }
-		        }
 
-                //TODO: Add code to check for a socket that is open, but not really connected/half open
+		            else if (!thr_list.at(i)->baselineTimeout) {
+
+                        int initial_time = cfg.initial_router_time;
+                        string hash(reinterpret_cast<char*>(thr_list.at(i)->client.hash_id), 16);
+
+                        //if calculate_baseline is true and the baseline time for the router is calculated, use the baseline time
+                        int baseline_time;
+                        if (cfg.calculate_baseline && cfg.getRouterBaselineTime(hash, baseline_time)) {
+                            initial_time = baseline_time;
+                        }
+
+                        timeval now;
+                        gettimeofday(&now, NULL);
+
+                        //If past the baseline time, decrement concurrent router count
+                        if(now.tv_sec - thr_list.at(i)->client.startTime.tv_sec >= initial_time) {
+                            --concurrent_routers;
+                            thr_list.at(i)->baselineTimeout = true;		// Indicating that this router is not counted in the concurrent routers count
+                        }
+		            }
+
+                    //TODO: Add code to check for a socket that is open, but not really connected/half open
+                }
             }
 
             /*
@@ -562,7 +573,10 @@ void runServer(Config &cfg) {
                                        ClientThread, thr);
 
                         // Add thread to vector
-                        thr_list.insert(thr_list.end(), thr);
+                        {
+                            std::lock_guard<std::mutex> lock(thr_list_mutex);
+                            thr_list.insert(thr_list.end(), thr);
+                        }
 
                         // Free attribute
                         pthread_attr_destroy(&thr_attr);
@@ -683,4 +697,3 @@ int main(int argc, char **argv) {
 
 	return 0;
 }
-
