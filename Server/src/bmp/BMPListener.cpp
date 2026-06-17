@@ -9,6 +9,7 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <iostream>
 #include <cerrno>
 #include <string>
+#include <algorithm>
 
 #include <poll.h>
 #include <MsgBusInterface.hpp>
@@ -140,6 +142,34 @@ void BMPListener::open_socket(bool ipv4, bool ipv6) {
 }
 
 /**
+ * Check if client IP is in the allowed list
+ *
+ * \param [in] client_ip    Client IP address string
+ *
+ * \return True if allowed, false otherwise
+ */
+bool BMPListener::isClientAllowed(const char *client_ip) {
+    // If no ACL is configured, allow all connections (backward compatibility)
+    if (cfg->bmp_acl.empty()) {
+        LOG_WARN("No BMP ACL configured - allowing connection from %s (SECURITY RISK)", client_ip);
+        return true;
+    }
+
+    string ip_str(client_ip);
+    
+    // Check if client IP is in the allowed list
+    for (const auto& allowed_ip : cfg->bmp_acl) {
+        if (ip_str == allowed_ip) {
+            LOG_INFO("Connection from %s allowed by ACL", client_ip);
+            return true;
+        }
+    }
+
+    LOG_WARN("Connection from %s DENIED - not in ACL", client_ip);
+    return false;
+}
+
+/**
  * Wait and Accept new/pending connections
  *
  * Will accept both IPv4 and IPv6 (if configured), but only one will be accepted
@@ -255,6 +285,14 @@ void BMPListener::accept_connection(ClientInfo &c, bool isIPv4) {
         snprintf(c.c_port, sizeof(c.c_port), "%hu", ntohs(v6_addr->sin6_port));
     }
 
+    // Check if client is allowed by ACL
+    if (!isClientAllowed(c.c_ip)) {
+        LOG_WARN("Rejecting connection from %s:%s - not in allowed ACL", c.c_ip, c.c_port);
+        close(c.c_sock);
+        c.c_sock = -1;
+        throw "Connection rejected: IP not in allowed ACL";
+    }
+
     // Get the server source address and port
     v4_addr = (sockaddr_in *) &c.s_addr;
     v6_addr = (sockaddr_in6 *) &c.s_addr;
@@ -278,6 +316,42 @@ void BMPListener::accept_connection(ClientInfo &c, bool isIPv4) {
     int on = 1;
     if (setsockopt(c.c_sock, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) < 0) {
         LOG_NOTICE("%s: sock=%d: Unable to enable tcp keepalives", c.c_ip, c.c_sock);
+    }
+
+    // Set TCP keepalive parameters for faster detection of dead connections
+    int keepidle = 60;      // Start keepalives after 60 seconds of idle
+    int keepintvl = 10;     // Send keepalive probes every 10 seconds
+    int keepcnt = 3;        // Close connection after 3 failed probes
+    
+    if (setsockopt(c.c_sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle)) < 0) {
+        LOG_NOTICE("%s: sock=%d: Unable to set TCP_KEEPIDLE", c.c_ip, c.c_sock);
+    }
+    
+    if (setsockopt(c.c_sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl)) < 0) {
+        LOG_NOTICE("%s: sock=%d: Unable to set TCP_KEEPINTVL", c.c_ip, c.c_sock);
+    }
+    
+    if (setsockopt(c.c_sock, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt)) < 0) {
+        LOG_NOTICE("%s: sock=%d: Unable to set TCP_KEEPCNT", c.c_ip, c.c_sock);
+    }
+
+    // Set receive timeout to detect idle connections (30 seconds)
+    struct timeval tv;
+    tv.tv_sec = 30;
+    tv.tv_usec = 0;
+    if (setsockopt(c.c_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        LOG_NOTICE("%s: sock=%d: Unable to set SO_RCVTIMEO", c.c_ip, c.c_sock);
+    }
+
+    // Set send timeout to prevent blocking on slow clients (30 seconds)
+    if (setsockopt(c.c_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        LOG_NOTICE("%s: sock=%d: Unable to set SO_SNDTIMEO", c.c_ip, c.c_sock);
+    }
+
+    // Set TCP_USER_TIMEOUT to close connection if no ACK received (90 seconds)
+    unsigned int user_timeout = 90000; // milliseconds
+    if (setsockopt(c.c_sock, IPPROTO_TCP, TCP_USER_TIMEOUT, &user_timeout, sizeof(user_timeout)) < 0) {
+        LOG_NOTICE("%s: sock=%d: Unable to set TCP_USER_TIMEOUT", c.c_ip, c.c_sock);
     }
     
     hashRouter(c);

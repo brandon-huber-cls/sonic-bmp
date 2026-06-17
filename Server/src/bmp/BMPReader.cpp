@@ -18,6 +18,8 @@
 #include <cstdlib>
 #include <string>
 #include <cerrno>
+#include <sys/time.h>
+#include <poll.h>
 
 #include "BMPListener.h"
 #include "BMPReader.h"
@@ -28,6 +30,11 @@
 #include "md5.h"
 
 using namespace std;
+
+// Connection timeout constants (in seconds)
+#define BMP_IDLE_TIMEOUT 300        // 5 minutes idle timeout
+#define BMP_INITIAL_TIMEOUT 60      // 1 minute for initial message
+#define BMP_READ_TIMEOUT 30         // 30 seconds for read operations
 
 /**
  * Class constructor
@@ -48,6 +55,8 @@ BMPReader::BMPReader(Logger *logPtr, Config *config) {
     
     hasPrevRIBdumpTime = false;
     maxRIBdumpRate = 0;
+    lastActivityTime = 0;
+    totalBytesReceived = 0;
 }
 
 /**
@@ -57,6 +66,71 @@ BMPReader::~BMPReader() {
 
 }
 
+/**
+ * Check if connection has timed out due to inactivity
+ *
+ * \param [in]  client      Client information pointer
+ *
+ * \return true if connection has timed out, false otherwise
+ */
+bool BMPReader::isConnectionTimedOut(BMPListener::ClientInfo *client) {
+    timeval now;
+    gettimeofday(&now, NULL);
+    
+    time_t elapsed = now.tv_sec - lastActivityTime;
+    
+    // Check for initial timeout if no init message received
+    if (!client->initRec && elapsed > BMP_INITIAL_TIMEOUT) {
+        LOG_WARN("%s: Connection timed out waiting for initial message (%ld seconds)", 
+                 client->c_ip, elapsed);
+        return true;
+    }
+    
+    // Check for idle timeout
+    if (elapsed > BMP_IDLE_TIMEOUT) {
+        LOG_WARN("%s: Connection idle timeout (%ld seconds)", client->c_ip, elapsed);
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Wait for data with timeout
+ *
+ * \param [in]  fd          File descriptor to wait on
+ * \param [in]  timeout_ms  Timeout in milliseconds
+ *
+ * \return true if data is available, false on timeout or error
+ */
+bool BMPReader::waitForData(int fd, int timeout_ms) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    
+    int ret = poll(&pfd, 1, timeout_ms);
+    
+    if (ret < 0) {
+        LOG_ERR("poll() error: %s", strerror(errno));
+        return false;
+    }
+    
+    if (ret == 0) {
+        // Timeout
+        return false;
+    }
+    
+    return (pfd.revents & POLLIN) != 0;
+}
+
+/**
+ * Update activity timestamp
+ */
+void BMPReader::updateActivityTime() {
+    timeval now;
+    gettimeofday(&now, NULL);
+    lastActivityTime = now.tv_sec;
+}
 
 /**
  * Read messages from BMP stream in a loop
@@ -70,9 +144,27 @@ BMPReader::~BMPReader() {
  * \throw (char const *str) message indicate error
  */
 void BMPReader::readerThreadLoop(bool &run, BMPListener::ClientInfo *client, MsgBusInterface *mbus_ptr) {
+    // Initialize activity time
+    updateActivityTime();
+    
     while (run) {
+        // Check for connection timeout
+        if (isConnectionTimedOut(client)) {
+            LOG_WARN("%s: Disconnecting due to timeout", client->c_ip);
+            disconnect(client, mbus_ptr, parseBMP::TERM_REASON_OPENBMP_CONN_ERR, 
+                      "Connection timeout due to inactivity");
+            run = false;
+            break;
+        }
 
         try {
+            // Wait for data with timeout
+            int read_fd = client->pipe_sock > 0 ? client->pipe_sock : client->c_sock;
+            if (!waitForData(read_fd, BMP_READ_TIMEOUT * 1000)) {
+                // Timeout waiting for data, check if connection is still valid
+                continue;
+            }
+            
             if (not ReadIncomingMsg(client, mbus_ptr))
                 break;
 
@@ -126,6 +218,9 @@ bool BMPReader::ReadIncomingMsg(BMPListener::ClientInfo *client, MsgBusInterface
 
     try {
         bmp_type = pBMP->handleMessage(read_fd);
+        
+        // Update activity time after successful read
+        updateActivityTime();
 
         /*
          * Now that we have parsed the BMP message...

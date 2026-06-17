@@ -30,7 +30,7 @@ using namespace boost::xpressive;
  */
 class Config {
 public:
-    u_char      c_hash_id[16];            ///< Collector Hash ID (raw format)
+    u_char      c_hash_id[32];            ///< Collector Hash ID (raw format) - SHA-256 hash
     char        admin_id[64];             ///< Admin ID
 
     std::string kafka_brokers;            ///< metadata.broker.list
@@ -62,6 +62,11 @@ public:
     int         initial_router_time;     ///<Initial time in allowing another concurrent router
     bool        calculate_baseline;      ///<Indicates if router baseline time should be calculated
     bool        pat_enabled;             ///<Indicates if router hash needs to be based on INIT message instead of source IP
+    int         bmp_connection_timeout;  ///<Timeout in seconds for idle BMP connections (default: 300)
+    int         bmp_data_timeout;        ///<Timeout in seconds for BMP connections with no data received (default: 120)
+    int         max_connections_per_ip;  ///<Maximum number of concurrent connections per source IP (default: 5)
+    int         bmp_rate_limit_bytes;    ///<Maximum bytes per second per BMP connection (default: 0 = unlimited)
+    int         bmp_rate_limit_window;   ///<Time window in seconds for rate limiting (default: 10)
 
     /**
      * matching structs and maps
