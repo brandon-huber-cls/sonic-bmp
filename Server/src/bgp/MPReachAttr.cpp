@@ -36,6 +36,31 @@ MPReachAttr::~MPReachAttr() {
 }
 
 /**
+ * Redacts sensitive peer address for logging
+ *
+ * \param [in]   addr    The peer address to redact
+ * \return Redacted address string
+ */
+std::string MPReachAttr::redactPeerAddress(const std::string &addr) {
+    if (debug) {
+        return addr;
+    }
+    
+    size_t pos = addr.find(':');
+    if (pos != std::string::npos) {
+        // IPv6 address - show only first segment
+        return addr.substr(0, pos) + ":****";
+    } else {
+        pos = addr.find('.');
+        if (pos != std::string::npos) {
+            // IPv4 address - show only first octet
+            return addr.substr(0, pos) + ".***.***.***";
+        }
+    }
+    return "***";
+}
+
+/**
  * Parse the MP_REACH NLRI attribute data
  *
  * \details
@@ -68,12 +93,18 @@ void MPReachAttr::parseReachNlriAttr(int attr_len, u_char *data, UpdateMsg::pars
      * Make sure the parsing doesn't exceed buffer
      */
     if (attr_len < 0) {
-        LOG_NOTICE("%s: MP_REACH NLRI data length is larger than attribute data length, skipping parse", peer_addr.c_str());
+        LOG_NOTICE("%s: MP_REACH NLRI data length is larger than attribute data length, skipping parse", 
+                   redactPeerAddress(peer_addr).c_str());
         return;
     }
 
-    SELF_DEBUG("%s: afi=%d safi=%d nh_len=%d reserved=%d", peer_addr.c_str(),
-                nlri.afi, nlri.safi, nlri.nh_len, nlri.reserved);
+    if (debug) {
+        SELF_DEBUG("%s: afi=%d safi=%d nh_len=%d reserved=%d", peer_addr.c_str(),
+                    nlri.afi, nlri.safi, nlri.nh_len, nlri.reserved);
+    } else {
+        SELF_DEBUG("%s: afi=%d safi=%d", redactPeerAddress(peer_addr).c_str(),
+                    nlri.afi, nlri.safi);
+    }
 
     /*
      * Next-hop and NLRI data depends on the AFI & SAFI
@@ -138,14 +169,15 @@ void MPReachAttr::parseAfi(mp_reach_nlri &nlri, UpdateMsg::parsed_update_data &p
 
                 default :
                     LOG_INFO("%s: EVPN::parse SAFI=%d is not implemented yet, skipping",
-                             peer_addr.c_str(), nlri.safi);
+                             redactPeerAddress(peer_addr).c_str(), nlri.safi);
             }
 
             break;
         }
 
         default : // Unknown
-            LOG_INFO("%s: MP_REACH AFI=%d is not implemented yet, skipping", peer_addr.c_str(), nlri.afi);
+            LOG_INFO("%s: MP_REACH AFI=%d is not implemented yet, skipping", 
+                     redactPeerAddress(peer_addr).c_str(), nlri.afi);
             return;
     }
 }
@@ -225,7 +257,7 @@ void MPReachAttr::parseAfi_IPv4IPv6(bool isIPv4, mp_reach_nlri &nlri, UpdateMsg:
 
         default :
             LOG_INFO("%s: MP_REACH AFI=ipv4/ipv6 (%d) SAFI=%d is not implemented yet, skipping for now",
-                     peer_addr.c_str(), isIPv4, nlri.safi);
+                     redactPeerAddress(peer_addr).c_str(), isIPv4, nlri.safi);
             return;
     }
 }

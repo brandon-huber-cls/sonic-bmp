@@ -8,6 +8,7 @@
  */
 
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <iostream>
 #include <string>
 #include <cstdio>
@@ -45,9 +46,15 @@ Logger::Logger(const char *log_filename, const char *debug_filename) {
 
     else if ( (logFile=fopen(log_filename, "a+")) == NULL)
         throw strerror(errno);
-    else
+    else {
         // Indicate this is a real file so that we can close it when needed.
         logFile_REALFILE = true;
+        
+        // Set secure file permissions (0600 - owner read/write only)
+        if (chmod(log_filename, S_IRUSR | S_IWUSR) != 0) {
+            fprintf(stderr, "Warning: Failed to set secure permissions on log file: %s\n", strerror(errno));
+        }
+    }
 
     /*
      * Open the debug log file
@@ -62,9 +69,15 @@ Logger::Logger(const char *log_filename, const char *debug_filename) {
 
         else if ( (debugFile=fopen(debug_filename, "w")) == NULL)
             throw strerror(errno);
-        else
+        else {
             // Indicate this is a real file so that we can close it when needed.
             debugFile_REALFILE = true;
+            
+            // Set secure file permissions (0600 - owner read/write only)
+            if (chmod(debug_filename, S_IRUSR | S_IWUSR) != 0) {
+                fprintf(stderr, "Warning: Failed to set secure permissions on debug log file: %s\n", strerror(errno));
+            }
+        }
     }
 }
 
@@ -115,6 +128,61 @@ void Logger::setWidthFunction(u_char width) {
 void Logger::setWidthFilename(u_char width) {
     if (width > 5 && width < 60)
         width_filename = width;
+}
+
+/*********************************************************************//**
+ * Redacts sensitive data from log messages
+ *
+ * \param[in]  msg          Original message
+ * \param[out] redacted     Buffer to store redacted message
+ * \param[in]  size         Size of redacted buffer
+ *
+ * \return     Pointer to redacted message
+ ***********************************************************************/
+const char* Logger::redactSensitiveData(const char *msg, char *redacted, size_t size) {
+    // If debug is enabled, return original message without redaction
+    if (debugEnabled) {
+        return msg;
+    }
+    
+    // Copy message to redacted buffer
+    strncpy(redacted, msg, size - 1);
+    redacted[size - 1] = '\0';
+    
+    // Simple pattern matching for common sensitive data patterns
+    // This is a basic implementation - can be enhanced with regex for more complex patterns
+    
+    // Redact IPv4 addresses (simple pattern: xxx.xxx.xxx.xxx)
+    char *ptr = redacted;
+    while ((ptr = strstr(ptr, ".")) != NULL) {
+        char *start = ptr;
+        // Look backwards for start of IP
+        while (start > redacted && (isdigit(*(start-1)) || *(start-1) == '.')) {
+            start--;
+        }
+        // Look forwards for end of IP
+        char *end = ptr;
+        while (*end && (isdigit(*end) || *end == '.')) {
+            end++;
+        }
+        // Check if this looks like an IP address (has 3 dots)
+        int dots = 0;
+        for (char *p = start; p < end; p++) {
+            if (*p == '.') dots++;
+        }
+        if (dots == 3) {
+            // Redact the IP address
+            size_t ip_len = end - start;
+            if (ip_len > 0 && ip_len < 16) {
+                memset(start, '*', ip_len);
+            }
+            ptr = end;
+        } else {
+            ptr++;
+        }
+    }
+    
+    return redacted;
 }
 
 /*********************************************************************//**
@@ -220,4 +288,3 @@ void Logger::printV(const char *sev,
     // Print the message
     vfprintf(output, bufmsg, args);
 }
-

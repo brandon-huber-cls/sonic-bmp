@@ -129,6 +129,22 @@ public:
      ***********************************************************************/
     void DebugPrint(const char *filename, int line_num, const char *func_name, const char *msg, ...);
 
+    /*********************************************************************//**
+     * Sets the log file permissions to restrict access
+     *
+     * \param[in]  filepath     path to the log file
+     *
+     * \return true if permissions were set successfully, false otherwise
+     ***********************************************************************/
+    bool setLogFilePermissions(const char *filepath);
+
+    /*********************************************************************//**
+     * Checks if debug mode is enabled
+     *
+     * \return true if debug is enabled, false otherwise
+     ***********************************************************************/
+    bool isDebugEnabled(void) const;
+
 
 private:
     bool    logFile_REALFILE;           ///< Indicates if the log file is using a real file or not
@@ -160,6 +176,15 @@ private:
                 const char *func_name,
                 const char *msg,
                 va_list args);
+
+    /**
+     * Redacts sensitive information from log messages
+     *
+     * \param [in]  msg         Original message that may contain sensitive data
+     * \param [out] redacted    Buffer to store redacted message
+     * \param [in]  buf_size    Size of the redacted buffer
+     */
+    void redactSensitiveData(const char *msg, char *redacted, size_t buf_size);
 
 };
 #endif /* LOGGER_H_ */
