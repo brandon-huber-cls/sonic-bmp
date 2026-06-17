@@ -13,6 +13,7 @@
 #include <string>
 #include <list>
 #include <map>
+#include <mutex>
 #include <yaml-cpp/yaml.h>
 #include <boost/xpressive/xpressive.hpp>
 #include <boost/exception/all.hpp>
@@ -115,6 +116,7 @@ public:
      */
     std::map<std::string, float> router_baseline_time;
     typedef std::map<std::string, float>::iterator router_baseline_time_iter;
+    std::mutex router_baseline_time_mutex;  ///< Mutex to protect router_baseline_time map
 
     /*********************************************************************//**
      * Constructor for class

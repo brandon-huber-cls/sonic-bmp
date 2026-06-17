@@ -13,6 +13,7 @@
 #include <cstring>
 #include <thread>
 #include <unistd.h>
+#include <mutex>
 
 #include "client_thread.h"
 #include "BMPReader.h"
@@ -22,6 +23,8 @@
 #include <cxxabi.h>
 #include <poll.h>
 
+// Global mutex for thread-safe access to shared data structures
+extern std::mutex thr_list_mutex;
 
 /**
  * Client thread cancel
@@ -272,8 +275,11 @@ void *ClientThread(void *arg) {
 
     pthread_cleanup_pop(0);
 
-    // Indicate that we are no longer running
-    thr->running = false;
+    // Indicate that we are no longer running - use mutex for thread-safe access
+    {
+        std::lock_guard<std::mutex> lock(thr_list_mutex);
+        thr->running = false;
+    }
 
     if (not cInfo.closing) {
         cInfo.closing = true;
