@@ -1,10 +1,11 @@
 # find openssl
-find_package( OpenSSL 1)
+find_package( OpenSSL 1 REQUIRED)
 if (OPENSSL_FOUND)
     include_directories(${OPENSSL_INCLUDE_DIR})
     set (SSL_LIBS ${OPENSSL_LIBRARIES} sasl2)
+    add_definitions(-DTLS_ENABLED)
 else()
-    set(SSL_LIBS )
+    message(FATAL_ERROR "OpenSSL is required for TLS support but was not found")
 endif()
 
 # cmake -DENABLE_REDIS=ON
