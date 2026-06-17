@@ -104,6 +104,11 @@ size_t UpdateMsg::parseUpdateMsg(u_char *data, size_t size, parsed_update_data &
     SELF_DEBUG("%s: rtr=%s: Withdrawn len = %hu", peer_addr.c_str(), router_addr.c_str(), uHdr.withdrawn_len );
 
     // Get the attributes length
+    if ((size - read_size) < sizeof(uHdr.attr_len)) {
+        LOG_WARN("%s: rtr=%s: Update message is too short to parse attr length", peer_addr.c_str(), router_addr.c_str());
+        return 0;
+    }
+
     memcpy(&uHdr.attr_len, bufPtr, sizeof(uHdr.attr_len));
     bufPtr += sizeof(uHdr.attr_len); read_size += sizeof(uHdr.attr_len);
     bgp::SWAP_BYTES(&uHdr.attr_len);
@@ -192,16 +197,31 @@ void UpdateMsg::parseNlriData_v4(u_char *data, uint16_t len, std::list<bgp::pref
         bzero(tuple.prefix_bin, sizeof(tuple.prefix_bin));
 
         // Parse add-paths if enabled
-        if (peer_info->add_path_capability.isAddPathEnabled(bgp::BGP_AFI_IPV4, bgp::BGP_SAFI_UNICAST)
-                and (len - read_size) >= 4) {
+        if (peer_info->add_path_capability.isAddPathEnabled(bgp::BGP_AFI_IPV4, bgp::BGP_SAFI_UNICAST)) {
+            if ((len - read_size) < 4) {
+                LOG_WARN("%s: rtr=%s: Not enough data for add-path ID", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             memcpy(&tuple.path_id, data, 4);
             bgp::SWAP_BYTES(&tuple.path_id);
             data += 4; read_size += 4;
         } else
             tuple.path_id = 0;
 
+        // Validate we have at least 1 byte for prefix length
+        if (read_size >= len) {
+            LOG_WARN("%s: rtr=%s: Not enough data for prefix length", peer_addr.c_str(), router_addr.c_str());
+            return;
+        }
+
         // set the address in bits length
         tuple.len = *data++;
+
+        // Validate prefix length is reasonable for IPv4
+        if (tuple.len > 32) {
+            LOG_WARN("%s: rtr=%s: Invalid IPv4 prefix length %d", peer_addr.c_str(), router_addr.c_str(), tuple.len);
+            return;
+        }
 
         // Figure out how many bytes the bits requires
         addr_bytes = tuple.len / 8;
@@ -210,6 +230,12 @@ void UpdateMsg::parseNlriData_v4(u_char *data, uint16_t len, std::list<bgp::pref
 
         SELF_DEBUG("%s: rtr=%s: Reading NLRI data prefix bits=%d bytes=%d", peer_addr.c_str(),
                     router_addr.c_str(), tuple.len, addr_bytes);
+
+        // Validate we have enough data for the prefix
+        if ((len - read_size) < addr_bytes) {
+            LOG_WARN("%s: rtr=%s: Not enough data for prefix bytes", peer_addr.c_str(), router_addr.c_str());
+            return;
+        }
 
         if (addr_bytes <= 4) {
             memcpy(ipv4_raw, data, addr_bytes);
@@ -266,6 +292,12 @@ void UpdateMsg::parseAttributes(u_char *data, uint16_t len, parsed_update_data &
      * Iterate through all attributes and parse them
      */
     for (int read_size=0;  read_size < len; read_size += 2) {
+        // Validate we have at least 2 bytes for flags and type
+        if ((len - read_size) < 2) {
+            LOG_WARN("%s: rtr=%s: Not enough data for attribute flags and type", peer_addr.c_str(), router_addr.c_str());
+            return;
+        }
+
         attr_flags = *data++;
         attr_type = *data++;
 
@@ -273,10 +305,19 @@ void UpdateMsg::parseAttributes(u_char *data, uint16_t len, parsed_update_data &
         if (ATTR_FLAG_EXTENDED(attr_flags)) {
             SELF_DEBUG("%s: rtr=%s: extended length path attribute bit set for an entry", peer_addr.c_str(), router_addr.c_str());
 
+            if ((len - read_size - 2) < 2) {
+                LOG_WARN("%s: rtr=%s: Not enough data for extended attribute length", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
+
             memcpy(&attr_len, data, 2); data += 2; read_size += 2;
             bgp::SWAP_BYTES(&attr_len);
 
         } else {
+            if ((len - read_size - 2) < 1) {
+                LOG_WARN("%s: rtr=%s: Not enough data for attribute length", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             attr_len = *data++;
             read_size++;
         }
@@ -285,7 +326,14 @@ void UpdateMsg::parseAttributes(u_char *data, uint16_t len, parsed_update_data &
                 peer_addr.c_str(), router_addr.c_str(), attr_type, attr_len);
 
         // Get the attribute data, if we have any; making sure to not overrun buffer
-        if (attr_len > 0 and (read_size + attr_len) <= len ) {
+        if (attr_len > 0) {
+            // Validate we have enough data for the attribute
+            if ((len - read_size) < attr_len) {
+                LOG_NOTICE("%s: rtr=%s: Attribute data len of %hu is larger than available data in update message of %hu",
+                        peer_addr.c_str(), router_addr.c_str(), attr_len, (len - read_size));
+                return;
+            }
+
             // Data pointer is currently at the data position of the attribute
 
             /*
@@ -297,11 +345,6 @@ void UpdateMsg::parseAttributes(u_char *data, uint16_t len, parsed_update_data &
 
             SELF_DEBUG("%s: rtr=%s: parsed attr type=%d, size=%hu", peer_addr.c_str(), router_addr.c_str(),
                         attr_type, attr_len);
-
-        } else if (attr_len) {
-            LOG_NOTICE("%s: rtr=%s: Attribute data len of %hu is larger than available data in update message of %hu",
-                    peer_addr.c_str(), router_addr.c_str(), attr_len, (len - read_size));
-            return;
         }
     }
 
@@ -332,6 +375,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
     switch (attr_type) {
 
         case ATTR_TYPE_ORIGIN : // Origin
+            if (attr_len < 1) {
+                LOG_WARN("%s: rtr=%s: ORIGIN attribute too short", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             switch (data[0]) {
                case 0 : decodeStr.assign("igp"); break;
                case 1 : decodeStr.assign("egp"); break;
@@ -346,6 +393,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
             break;
 
         case ATTR_TYPE_NEXT_HOP : // Next hop v4
+            if (attr_len < 4) {
+                LOG_WARN("%s: rtr=%s: NEXT_HOP attribute too short", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             memcpy(ipv4_raw, data, 4);
             inet_ntop(AF_INET, ipv4_raw, ipv4_char, sizeof(ipv4_char));
             parsed_data.attrs[ATTR_TYPE_NEXT_HOP] = std::string(ipv4_char);
@@ -353,6 +404,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
 
         case ATTR_TYPE_MED : // MED value
         {
+            if (attr_len < 4) {
+                LOG_WARN("%s: rtr=%s: MED attribute too short", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             memcpy(&value32bit, data, 4);
             bgp::SWAP_BYTES(&value32bit);
             std::ostringstream numString;
@@ -362,6 +417,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
         }
         case ATTR_TYPE_LOCAL_PREF : // local pref value
         {
+            if (attr_len < 4) {
+                LOG_WARN("%s: rtr=%s: LOCAL_PREF attribute too short", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             memcpy(&value32bit, data, 4);
             bgp::SWAP_BYTES(&value32bit);
             std::ostringstream numString;
@@ -378,6 +437,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
             break;
 
         case ATTR_TYPE_ORIGINATOR_ID : // Originator ID
+            if (attr_len < 4) {
+                LOG_WARN("%s: rtr=%s: ORIGINATOR_ID attribute too short", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             memcpy(ipv4_raw, data, 4);
             inet_ntop(AF_INET, ipv4_raw, ipv4_char, sizeof(ipv4_char));
             parsed_data.attrs[ATTR_TYPE_ORIGINATOR_ID] = std::string(ipv4_char);
@@ -385,6 +448,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
 
         case ATTR_TYPE_CLUSTER_LIST : // Cluster List (RFC 4456)
             // According to RFC 4456, the value is a sequence of cluster id's
+            if (attr_len % 4 != 0) {
+                LOG_WARN("%s: rtr=%s: CLUSTER_LIST attribute length not multiple of 4", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             for (int i=0; i < attr_len; i += 4) {
                 memcpy(ipv4_raw, data, 4);
                 data += 4;
@@ -398,6 +465,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
 
         case ATTR_TYPE_COMMUNITIES : // Community list
         {
+            if (attr_len % 4 != 0) {
+                LOG_WARN("%s: rtr=%s: COMMUNITIES attribute length not multiple of 4", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             for (int i = 0; i < attr_len; i += 4) {
                 std::ostringstream numString;
 
@@ -479,6 +550,10 @@ void UpdateMsg::parseAttrData(u_char attr_type, uint16_t attr_len, u_char *data,
 
         case ATTR_TYPE_LARGE_COMMUNITY: {
             // RFC8092
+            if (attr_len % 12 != 0) {
+                LOG_WARN("%s: rtr=%s: LARGE_COMMUNITY attribute length not multiple of 12", peer_addr.c_str(), router_addr.c_str());
+                return;
+            }
             if (attr_len >= 12) {
                 for (int i = 0; i < attr_len; i += 12) {
                     std::ostringstream numString;
@@ -598,6 +673,11 @@ void UpdateMsg::parseAttr_AsPath(uint16_t attr_len, u_char *data, parsed_attrs_m
      * Loop through each path segment
      */
     while (path_len > 0) {
+        // Validate we have at least 2 bytes for segment type and length
+        if (path_len < 2) {
+            LOG_WARN("%s: rtr=%s: AS_PATH segment header incomplete", peer_addr.c_str(), router_addr.c_str());
+            return;
+        }
 
         seg_type = *data++;
         seg_len  = *data++;                  // Count of AS's, not bytes
@@ -609,67 +689,4 @@ void UpdateMsg::parseAttr_AsPath(uint16_t attr_len, u_char *data, parsed_attrs_m
 
         SELF_DEBUG("%s: rtr=%s: as_path seg_len = %d seg_type = %d, path_len = %d total_len = %d as_octet_size = %d",
                    peer_addr.c_str(), router_addr.c_str(),
-                   seg_len, seg_type, path_len, attr_len, asn_octet_size);
-
-        if ((seg_len * asn_octet_size) > path_len){
-
-            LOG_NOTICE("%s: rtr=%s: Could not parse the AS PATH due to update message buffer being too short when using ASN octet size %d (%d > %d)",
-                       peer_addr.c_str(), router_addr.c_str(), asn_octet_size, (seg_len * asn_octet_size), path_len);
-
-            if (not peer_info->using_2_octet_asn) {
-                LOG_NOTICE("%s: rtr=%s: switching encoding size to 2-octet",
-                           peer_addr.c_str(), router_addr.c_str());
-
-                peer_info->using_2_octet_asn = true;
-
-                parseAttr_AsPath(attr_len, data_ptr, attrs);
-            }
-            return;
-        }
-
-        // The rest of the data is the as path sequence, in blocks of 2 or 4 bytes
-        for (; seg_len > 0; seg_len--) {
-            seg_asn = 0;
-            memcpy(&seg_asn, data, asn_octet_size);  data += asn_octet_size;
-            path_len -= asn_octet_size;                               // Adjust the path length for what was read
-
-            bgp::SWAP_BYTES(&seg_asn, asn_octet_size);
-            decoded_path.append(" ");
-            std::ostringstream numString;
-            numString << seg_asn;
-            decoded_path.append(numString.str());
-
-            // Increase the as path count
-            ++as_path_cnt;
-        }
-
-        if (seg_type == 1) {            // If AS-SET close with a brace
-            decoded_path.append(" }");
-        }
-    }
-
-    SELF_DEBUG("%s: rtr=%s: Parsed AS_PATH count %hu : %s", peer_addr.c_str(), router_addr.c_str(), as_path_cnt, decoded_path.c_str());
-
-    /*
-     * Update the attributes map
-     */
-    attrs[ATTR_TYPE_AS_PATH] = decoded_path;
-
-    {
-        std::ostringstream numString;
-        numString << as_path_cnt;
-        attrs[ATTR_TYPE_INTERNAL_AS_COUNT] = numString.str();
-    }
-
-    /*
-     * Get the last ASN and update the attributes map
-     */
-    {
-        std::ostringstream numString;
-        numString << seg_asn;
-        attrs[ATTR_TYPE_INTERNAL_AS_ORIGIN] = numString.str();
-    }
-
-}
-
-} /* namespace bgp_msg */
+                   seg_len, seg_type, path_len, attr_len, asn_oc
