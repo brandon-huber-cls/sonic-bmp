@@ -31,7 +31,7 @@ using namespace boost::xpressive;
 class Config {
 public:
     u_char      c_hash_id[16];            ///< Collector Hash ID (raw format)
-    char        admin_id[64];             ///< Admin ID
+    char        admin_id[64];             ///< Admin ID - always null-terminated
 
     std::string kafka_brokers;            ///< metadata.broker.list
     uint16_t    bmp_port;                 ///< BMP listening port
