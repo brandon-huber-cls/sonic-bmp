@@ -30,7 +30,7 @@ using namespace boost::xpressive;
  */
 class Config {
 public:
-    u_char      c_hash_id[16];            ///< Collector Hash ID (raw format)
+    u_char      c_hash_id[32];            ///< Collector Hash ID (raw format) - SHA-256 hash
     char        admin_id[64];             ///< Admin ID
 
     std::string kafka_brokers;            ///< metadata.broker.list
@@ -62,6 +62,16 @@ public:
     int         initial_router_time;     ///<Initial time in allowing another concurrent router
     bool        calculate_baseline;      ///<Indicates if router baseline time should be calculated
     bool        pat_enabled;             ///<Indicates if router hash needs to be based on INIT message instead of source IP
+    bool        pat_require_source_validation; ///<Indicates if source IP validation is required when PAT is enabled
+
+    // BMP Access Control Configuration
+    bool        bmp_acl_enabled;         ///< Indicates if BMP access control is enabled
+    std::list<std::string> bmp_allowed_ips; ///< List of allowed IP addresses/ranges for BMP connections
+    bool        bmp_require_tls;         ///< Indicates if TLS is required for BMP connections
+    std::string bmp_tls_cert_file;       ///< Path to TLS certificate file
+    std::string bmp_tls_key_file;        ///< Path to TLS private key file
+    std::string bmp_tls_ca_file;         ///< Path to TLS CA certificate file for client verification
+    bool        bmp_tls_verify_client;   ///< Indicates if client certificate verification is required
 
     /**
      * matching structs and maps
@@ -99,6 +109,18 @@ public:
     typedef std::map<std::string, std::list<uint32_t>>::iterator match_peer_group_by_asn_iter;
 
     /**
+     * BMP access control list - compiled IP ranges for allowed BMP connections
+     */
+    std::list<match_type_ip> bmp_acl_list;
+    typedef std::list<match_type_ip>::iterator bmp_acl_list_iter;
+
+    /**
+     * PAT allowed source IPs - compiled IP ranges for allowed source IPs when PAT is enabled
+     */
+    std::list<match_type_ip> pat_allowed_source_ips;
+    typedef std::list<match_type_ip>::iterator pat_allowed_source_ips_iter;
+
+    /**
      * kafka topic variables
      */
     std::map<std::string, std::string> topic_vars_map;
@@ -127,6 +149,26 @@ public:
      * \param [in] cfg_filename     Yaml configuration filename
      ***********************************************************************/
     void load(const char *cfg_filename);
+
+    /*********************************************************************//**
+     * Check if an IP address is allowed to connect to BMP listener
+     *
+     * \param [in] ip_addr          IP address to check (string format)
+     * \param [in] isIPv4           True if IPv4, false if IPv6
+     *
+     * \return true if allowed, false otherwise
+     ***********************************************************************/
+    bool isBMPConnectionAllowed(const std::string &ip_addr, bool isIPv4);
+
+    /*********************************************************************//**
+     * Check if a source IP is allowed when PAT is enabled
+     *
+     * \param [in] ip_addr          IP address to check (string format)
+     * \param [in] isIPv4           True if IPv4, false if IPv6
+     *
+     * \return true if allowed, false otherwise
+     ***********************************************************************/
+    bool isPATSourceAllowed(const std::string &ip_addr, bool isIPv4);
 
 private:
     /**
@@ -163,6 +205,13 @@ private:
      * \param [in] node     Reference to the yaml NODE
      */
     void parseMapping(const YAML::Node &node);
+
+    /**
+     * Parse the BMP access control configuration
+     *
+     * \param [in] node     Reference to the yaml NODE
+     */
+    void parseBMPAccessControl(const YAML::Node &node);
 
     /**
      * Parse matching prefix_range list and update the provided map with compiled expressions
