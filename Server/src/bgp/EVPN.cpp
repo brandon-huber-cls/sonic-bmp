@@ -32,31 +32,53 @@ namespace bgp_msg {
      * \details
      *      Will parse the Segment Identifier. Based on https://tools.ietf.org/html/rfc7432#section-5
      *
-     * \param [in/out]  data_pointer  Pointer to the beginning of Route Distinguisher
-     * \param [out]     rd_type                    Reference to RD type.
-     * \param [out]     rd_assigned_number         Reference to Assigned Number subfield
-     * \param [out]     rd_administrator_subfield  Reference to Administrator subfield
+     * \param [in]      data_pointer  Pointer to the beginning of Ethernet Segment Identifier
+     * \param [in]      remaining_len Remaining bytes available in the buffer
+     * \param [out]     parsed_data   Reference to string where parsed data will be stored
+     * \param [out]     bytes_read    Number of bytes consumed from the buffer
+     * 
+     * \return true if parsing succeeded, false if buffer is too short
      */
-    void EVPN::parseEthernetSegmentIdentifier(u_char *data_pointer, std::string *parsed_data) {
+    bool EVPN::parseEthernetSegmentIdentifier(u_char *data_pointer, size_t remaining_len, 
+                                               std::string *parsed_data, size_t *bytes_read) {
         std::stringstream result;
+        
+        // Need at least 1 byte for type
+        if (remaining_len < 1) {
+            LOG_WARN("%s: Insufficient data for ESI type (need 1, have %zu)", peer_addr.c_str(), remaining_len);
+            return false;
+        }
+        
         uint8_t type = *data_pointer;
-
         data_pointer++;
+        remaining_len--;
+        *bytes_read = 1;
 
         result << (int) type << " ";
 
         switch (type) {
             case 0: {
+                // Need 9 bytes for type 0
+                if (remaining_len < 9) {
+                    LOG_WARN("%s: Insufficient data for ESI type 0 (need 9, have %zu)", peer_addr.c_str(), remaining_len);
+                    return false;
+                }
                 for (int i = 0; i < 9; i++) {
                     result << std::hex << setfill('0') << setw(2) << (int) data_pointer[i];
                 }
+                *bytes_read += 9;
                 break;
             }
             case 1: {
+                // Need 6 bytes for MAC + 2 bytes for port key
+                if (remaining_len < 8) {
+                    LOG_WARN("%s: Insufficient data for ESI type 1 (need 8, have %zu)", peer_addr.c_str(), remaining_len);
+                    return false;
+                }
                 for (int i = 0; i < 6; ++i) {
                     if (i != 0) result << ':';
-                    result.width(2); //< Use two chars for each byte
-                    result.fill('0'); //< Fill up with '0' if the number is only one hexadecimal digit
+                    result.width(2);
+                    result.fill('0');
                     result << std::hex << (int) (data_pointer[i]);
                 }
                 data_pointer += 6;
@@ -68,14 +90,19 @@ namespace bgp_msg {
                 bgp::SWAP_BYTES(&CE_LACP_port_key, 2);
 
                 result << std::dec << (int) CE_LACP_port_key;
-
+                *bytes_read += 8;
                 break;
             }
             case 2: {
+                // Need 6 bytes for MAC + 2 bytes for priority
+                if (remaining_len < 8) {
+                    LOG_WARN("%s: Insufficient data for ESI type 2 (need 8, have %zu)", peer_addr.c_str(), remaining_len);
+                    return false;
+                }
                 for (int i = 0; i < 6; ++i) {
                     if (i != 0) result << ':';
-                    result.width(2); //< Use two chars for each byte
-                    result.fill('0'); //< Fill up with '0' if the number is only one hexadecimal digit
+                    result.width(2);
+                    result.fill('0');
                     result << std::hex << (int) (data_pointer[i]);
                 }
                 data_pointer += 6;
@@ -87,14 +114,19 @@ namespace bgp_msg {
                 bgp::SWAP_BYTES(&root_bridge_priority, 2);
 
                 result << std::dec << (int) root_bridge_priority;
-
+                *bytes_read += 8;
                 break;
             }
             case 3: {
+                // Need 6 bytes for MAC + 3 bytes for discriminator
+                if (remaining_len < 9) {
+                    LOG_WARN("%s: Insufficient data for ESI type 3 (need 9, have %zu)", peer_addr.c_str(), remaining_len);
+                    return false;
+                }
                 for (int i = 0; i < 6; ++i) {
                     if (i != 0) result << ':';
-                    result.width(2); //< Use two chars for each byte
-                    result.fill('0'); //< Fill up with '0' if the number is only one hexadecimal digit
+                    result.width(2);
+                    result.fill('0');
                     result << std::hex << (int) (data_pointer[i]);
                 }
                 data_pointer += 6;
@@ -106,10 +138,15 @@ namespace bgp_msg {
                 bgp::SWAP_BYTES(&local_discriminator_value, 4);
                 local_discriminator_value = local_discriminator_value >> 8;
                 result << std::dec << (int) local_discriminator_value;
-
+                *bytes_read += 9;
                 break;
             }
             case 4: {
+                // Need 4 bytes for router ID + 4 bytes for discriminator
+                if (remaining_len < 8) {
+                    LOG_WARN("%s: Insufficient data for ESI type 4 (need 8, have %zu)", peer_addr.c_str(), remaining_len);
+                    return false;
+                }
                 uint32_t router_id;
                 memcpy(&router_id, data_pointer, 4);
                 bgp::SWAP_BYTES(&router_id, 4);
@@ -121,9 +158,15 @@ namespace bgp_msg {
                 memcpy(&local_discriminator_value, data_pointer, 4);
                 bgp::SWAP_BYTES(&local_discriminator_value, 4);
                 result << std::dec << (int) local_discriminator_value;
+                *bytes_read += 8;
                 break;
             }
             case 5: {
+                // Need 4 bytes for AS number + 4 bytes for discriminator
+                if (remaining_len < 8) {
+                    LOG_WARN("%s: Insufficient data for ESI type 5 (need 8, have %zu)", peer_addr.c_str(), remaining_len);
+                    return false;
+                }
                 uint32_t as_number;
                 memcpy(&as_number, data_pointer, 4);
                 bgp::SWAP_BYTES(&as_number, 4);
@@ -135,14 +178,16 @@ namespace bgp_msg {
                 memcpy(&local_discriminator_value, data_pointer, 4);
                 bgp::SWAP_BYTES(&local_discriminator_value, 4);
                 result << std::dec << (int) local_discriminator_value;
+                *bytes_read += 8;
                 break;
             }
             default:
-                LOG_WARN("%s: MP_REACH Cannot parse ethernet segment identifyer type: %d", type);
-                break;
+                LOG_WARN("%s: MP_REACH Cannot parse ethernet segment identifier type: %d", peer_addr.c_str(), type);
+                return false;
         }
 
         *parsed_data = result.str();
+        return true;
     }
 
     /**
@@ -296,11 +341,26 @@ namespace bgp_msg {
                     if ((data_read + 17 /* expected read size */) <= data_len) {
 
                         // Ethernet Segment Identifier (10 bytes)
-                        parseEthernetSegmentIdentifier(data_pointer, &tuple.ethernet_segment_identifier);
-                        data_pointer += 10;
+                        size_t esi_bytes_read = 0;
+                        size_t remaining = data_len - data_read;
+                        if (!parseEthernetSegmentIdentifier(data_pointer, remaining, 
+                                                           &tuple.ethernet_segment_identifier, &esi_bytes_read)) {
+                            LOG_WARN("%s: Failed to parse ESI for Ethernet Auto-Discovery route", peer_addr.c_str());
+                            return;
+                        }
+                        data_pointer += esi_bytes_read;
+                        data_read += esi_bytes_read;
+                        len -= esi_bytes_read;
+
+                        // Check if we have enough data for Ethernet Tag ID (4 bytes) + MPLS Label (3 bytes)
+                        remaining = data_len - data_read;
+                        if (remaining < 7) {
+                            LOG_WARN("%s: Insufficient data for Ethernet Tag ID and MPLS Label (need 7, have %zu)", 
+                                    peer_addr.c_str(), remaining);
+                            return;
+                        }
 
                         //Ethernet Tag Id (4 bytes), printing in hex.
-
                         u_char ethernet_id[4];
                         bzero(&ethernet_id, 4);
                         memcpy(&ethernet_id, data_pointer, 4);
@@ -320,8 +380,8 @@ namespace bgp_msg {
                         tuple.mpls_label_1 >>= 8;
 
                         data_pointer += 3;
-                        data_read += 17;
-                        len -= 17;
+                        data_read += 7;
+                        len -= 7;
                     }
                     break;
                 }
@@ -330,11 +390,26 @@ namespace bgp_msg {
                     if ((data_read + 25 /* expected read size */) <= data_len) {
 
                         // Ethernet Segment Identifier (10 bytes)
-                        parseEthernetSegmentIdentifier(data_pointer, &tuple.ethernet_segment_identifier);
-                        data_pointer += 10;
+                        size_t esi_bytes_read = 0;
+                        size_t remaining = data_len - data_read;
+                        if (!parseEthernetSegmentIdentifier(data_pointer, remaining, 
+                                                           &tuple.ethernet_segment_identifier, &esi_bytes_read)) {
+                            LOG_WARN("%s: Failed to parse ESI for MAC/IP Advertisement route", peer_addr.c_str());
+                            return;
+                        }
+                        data_pointer += esi_bytes_read;
+                        data_read += esi_bytes_read;
+                        len -= esi_bytes_read;
+
+                        // Check if we have enough data for Ethernet Tag ID (4 bytes) + MAC len (1 byte) + MAC (6 bytes) + IP len (1 byte)
+                        remaining = data_len - data_read;
+                        if (remaining < 12) {
+                            LOG_WARN("%s: Insufficient data for MAC/IP Advertisement (need at least 12, have %zu)", 
+                                    peer_addr.c_str(), remaining);
+                            return;
+                        }
 
                         // Ethernet Tag ID (4 bytes)
-
                         u_char ethernet_id[4];
                         bzero(&ethernet_id, 4);
                         memcpy(&ethernet_id, data_pointer, 4);
@@ -362,8 +437,8 @@ namespace bgp_msg {
                         tuple.ip_len = *data_pointer;
                         data_pointer++;
 
-                        data_read += 22;
-                        len -= 22;
+                        data_read += 12;
+                        len -= 12;
 
                         addr_bytes = tuple.ip_len > 0 ? (tuple.ip_len / 8) : 0;
                         if (addr_bytes > (int)sizeof(ip_binary)) addr_bytes = sizeof(ip_binary);
@@ -461,15 +536,31 @@ namespace bgp_msg {
                     if ((data_read + 11 /* expected read size */) <= data_len) {
 
                         // Ethernet Segment Identifier (10 bytes)
-                        parseEthernetSegmentIdentifier(data_pointer, &tuple.ethernet_segment_identifier);
-                        data_pointer += 10;
+                        size_t esi_bytes_read = 0;
+                        size_t remaining = data_len - data_read;
+                        if (!parseEthernetSegmentIdentifier(data_pointer, remaining, 
+                                                           &tuple.ethernet_segment_identifier, &esi_bytes_read)) {
+                            LOG_WARN("%s: Failed to parse ESI for Ethernet Segment route", peer_addr.c_str());
+                            return;
+                        }
+                        data_pointer += esi_bytes_read;
+                        data_read += esi_bytes_read;
+                        len -= esi_bytes_read;
+
+                        // Check if we have enough data for IP Address Length (1 byte)
+                        remaining = data_len - data_read;
+                        if (remaining < 1) {
+                            LOG_WARN("%s: Insufficient data for IP Address Length (need 1, have %zu)", 
+                                    peer_addr.c_str(), remaining);
+                            return;
+                        }
 
                         // IP Address Length (1 bytes)
                         tuple.originating_router_ip_len = *data_pointer;
                         data_pointer++;
 
-                        data_read += 11;
-                        len -= 11;
+                        data_read += 1;
+                        len -= 1;
 
                         addr_bytes = tuple.originating_router_ip_len > 0 ? (tuple.originating_router_ip_len / 8) : 0;
                         if (addr_bytes > (int)sizeof(ip_binary)) addr_bytes = sizeof(ip_binary);
