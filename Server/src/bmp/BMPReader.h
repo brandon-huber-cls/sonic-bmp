@@ -19,6 +19,7 @@
 
 #include <map>
 #include <memory>
+#include <chrono>
 
 /**
  * \class   BMPReader
@@ -41,6 +42,16 @@ public:
         AddPathDataContainer add_path_capability;               ///< Stores data about Add Path capability
         string peer_group;                                      ///< Peer group name of defined
 	bool endOfRIB;						///< Indicates if End-Of-RIB marker is received
+    };
+
+    /**
+     * Connection activity tracking structure
+     */
+    struct connection_activity {
+        std::chrono::steady_clock::time_point last_activity;    ///< Last time data was received
+        std::chrono::steady_clock::time_point connection_start; ///< Connection establishment time
+        uint64_t bytes_received;                                ///< Total bytes received on this connection
+        uint64_t messages_received;                             ///< Total messages received on this connection
     };
 
 
@@ -111,6 +122,30 @@ public:
 
     void hashRouter(BMPListener::ClientInfo *client, MsgBusInterface::obj_router &r_entry);
 
+    /**
+     * Check if connection has been idle for too long
+     *
+     * \param [in]  client      Client information pointer
+     * \return true if connection should be terminated due to idle timeout
+     */
+    bool isConnectionIdle(BMPListener::ClientInfo *client);
+
+    /**
+     * Update connection activity tracking
+     *
+     * \param [in]  client      Client information pointer
+     * \param [in]  bytes       Number of bytes received in this update
+     */
+    void updateConnectionActivity(BMPListener::ClientInfo *client, uint64_t bytes);
+
+    /**
+     * Check if connection has exceeded rate limits
+     *
+     * \param [in]  client      Client information pointer
+     * \return true if connection should be terminated due to rate limit violation
+     */
+    bool isRateLimitExceeded(BMPListener::ClientInfo *client);
+
     // Debug methods
     void enableDebug();
     void disableDebug();
@@ -129,11 +164,24 @@ private:
     int32_t 	prevRIBdumpTime;            ///< Stores the time the previous message was received
     int32_t 	maxRIBdumpRate;             ///< Stores the maximum RIB dump rate
     int32_t     belowThresholdInitTime;     ///< Stores the time when the RIB dump rate has dropped below threshold
+    
     /**
      * Persistent peer info map, Key is the peer_hash_id.
      */
     std::map<std::string, peer_info> peer_info_map;
     typedef std::map<std::string, peer_info>::iterator peer_info_map_iter;
+
+    /**
+     * Connection activity tracking map, Key is the client socket descriptor
+     */
+    std::map<int, connection_activity> connection_activity_map;
+    typedef std::map<int, connection_activity>::iterator connection_activity_map_iter;
+
+    /**
+     * Per-IP connection count map for rate limiting
+     */
+    std::map<std::string, uint32_t> ip_connection_count;
+    typedef std::map<std::string, uint32_t>::iterator ip_connection_count_iter;
 
 };
 
