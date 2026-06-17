@@ -12,6 +12,7 @@
 #include <sstream>
 #include <iostream>
 #include <arpa/inet.h>
+#include <limits>
 
 #include "UpdateMsg.h"
 #include "ExtCommunity.h"
@@ -53,8 +54,20 @@ namespace bgp_msg {
         std::string decodeStr = "";
         extcomm_hdr ec_hdr;
 
+        // Validate attr_len is non-negative and within reasonable bounds
+        if (attr_len < 0 || attr_len > 65535) {
+            LOG_NOTICE("%s: Parsing extended community len=%d is invalid, must be between 0 and 65535", peer_addr.c_str(), attr_len);
+            return;
+        }
+
         if ( (attr_len % 8) ) {
             LOG_NOTICE("%s: Parsing extended community len=%d is invalid, expecting divisible by 8", peer_addr.c_str(), attr_len);
+            return;
+        }
+
+        // Additional safety check to prevent potential overflow in loop
+        if (attr_len > 0 && data == NULL) {
+            LOG_NOTICE("%s: Parsing extended community with NULL data pointer", peer_addr.c_str());
             return;
         }
 
@@ -62,6 +75,18 @@ namespace bgp_msg {
          * Loop through consecutive entries
          */
         for (int i = 0; i < attr_len; i += 8) {
+            // Verify we won't overflow on next iteration
+            if (i > attr_len - 8) {
+                LOG_NOTICE("%s: Extended community parsing stopped due to insufficient data", peer_addr.c_str());
+                break;
+            }
+
+            // Bounds check before accessing data
+            if (data == NULL) {
+                LOG_NOTICE("%s: Extended community data pointer is NULL at offset %d", peer_addr.c_str(), i);
+                break;
+            }
+
             // Setup extended community header
             ec_hdr.high_type = data[0];
             ec_hdr.low_type  = data[1];
@@ -139,11 +164,17 @@ namespace bgp_msg {
         uint32_t            val_32b;
         char                ipv4_char[16] = {0};
 
+        // Validate ec_hdr.value pointer
+        if (ec_hdr.value == NULL) {
+            LOG_NOTICE("%s: Extended community value pointer is NULL", peer_addr.c_str());
+            return "";
+        }
+
         /*
          * Decode values based on bit size
          */
         if (isGlobal4Bytes) {
-            // Four-byte global field
+            // Four-byte global field - need 6 bytes total
             memcpy(&val_32b, ec_hdr.value, 4);
             memcpy(&val_16b, ec_hdr.value + 4, 2);
 
@@ -155,7 +186,7 @@ namespace bgp_msg {
                 bgp::SWAP_BYTES(&val_32b);
 
         } else {
-            // Two-byte global field
+            // Two-byte global field - need 6 bytes total
             memcpy(&val_16b, ec_hdr.value, 2);
             memcpy(&val_32b, ec_hdr.value + 2, 4);
 
@@ -304,6 +335,12 @@ namespace bgp_msg {
         std::stringstream   val_ss;
         uint32_t            val_32b;
 
+        // Validate ec_hdr.value pointer
+        if (ec_hdr.value == NULL) {
+            LOG_NOTICE("%s: Extended community EVPN value pointer is NULL", peer_addr.c_str());
+            return "";
+        }
+
         switch(ec_hdr.low_type) {
             case EXT_EVPN_MAC_MOBILITY: {
                 val_ss << "mac_mob_flags=";
@@ -362,6 +399,12 @@ namespace bgp_msg {
     std::string ExtCommunity::decodeType_Opaque(const extcomm_hdr &ec_hdr) {
         std::stringstream   val_ss;
         uint32_t            val_32b;
+
+        // Validate ec_hdr.value pointer
+        if (ec_hdr.value == NULL) {
+            LOG_NOTICE("%s: Extended community Opaque value pointer is NULL", peer_addr.c_str());
+            return "";
+        }
 
         switch(ec_hdr.low_type) {
             case EXT_OPAQUE_COST_COMMUNITY: {
@@ -467,6 +510,12 @@ namespace bgp_msg {
         uint16_t            val_16b;
         uint32_t            val_32b;
         char                ipv4_char[16] = {0};
+
+        // Validate ec_hdr.value pointer
+        if (ec_hdr.value == NULL) {
+            LOG_NOTICE("%s: Extended community Generic value pointer is NULL", peer_addr.c_str());
+            return "";
+        }
 
         /*
          * Decode values based on bit size
@@ -584,8 +633,20 @@ namespace bgp_msg {
 
         LOG_INFO("%s: Parsing IPv6 extended community len=%d", peer_addr.c_str(), attr_len);
 
+        // Validate attr_len is non-negative and within reasonable bounds
+        if (attr_len < 0 || attr_len > 65535) {
+            LOG_NOTICE("%s: Parsing IPv6 extended community len=%d is invalid, must be between 0 and 65535", peer_addr.c_str(), attr_len);
+            return;
+        }
+
         if ( (attr_len % 20) ) {
             LOG_NOTICE("%s: Parsing IPv6 extended community len=%d is invalid, expecting divisible by 20", peer_addr.c_str(), attr_len);
+            return;
+        }
+
+        // Additional safety check to prevent potential overflow in loop
+        if (attr_len > 0 && data == NULL) {
+            LOG_NOTICE("%s: Parsing IPv6 extended community with NULL data pointer", peer_addr.c_str());
             return;
         }
 
@@ -593,6 +654,18 @@ namespace bgp_msg {
          * Loop through consecutive entries
          */
         for (int i = 0; i < attr_len; i += 20) {
+            // Verify we won't overflow on next iteration
+            if (i > attr_len - 20) {
+                LOG_NOTICE("%s: IPv6 extended community parsing stopped due to insufficient data", peer_addr.c_str());
+                break;
+            }
+
+            // Bounds check before accessing data
+            if (data == NULL) {
+                LOG_NOTICE("%s: IPv6 extended community data pointer is NULL at offset %d", peer_addr.c_str(), i);
+                break;
+            }
+
             // Setup extended community header
             ec_hdr.high_type = data[0];
             ec_hdr.low_type = data[1];
@@ -611,6 +684,9 @@ namespace bgp_msg {
                             ec_hdr.high_type, ec_hdr.low_type);
                     break;
             }
+
+            // Move data pointer to next entry
+            data += 20;
         }
     }
 
@@ -632,8 +708,14 @@ namespace bgp_msg {
         u_char              ipv6_raw[16] = {0};
         char                ipv6_char[40] = {0};
 
+        // Validate ec_hdr.value pointer and ensure we have at least 18 bytes
+        if (ec_hdr.value == NULL) {
+            LOG_NOTICE("%s: Extended community IPv6 value pointer is NULL", peer_addr.c_str());
+            return "";
+        }
+
         memcpy(ipv6_raw, ec_hdr.value, 16);
-        if (inet_ntop(AF_INET6, ipv6_raw, ipv6_char, sizeof(ipv6_char)) != NULL)
+        if (inet_ntop(AF_INET6, ipv6_raw, ipv6_char, sizeof(ipv6_char)) == NULL)
             return "";
 
         memcpy(&val_16b, ec_hdr.value + 16, 2);

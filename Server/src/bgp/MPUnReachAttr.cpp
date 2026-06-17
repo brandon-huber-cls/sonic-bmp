@@ -13,6 +13,7 @@
 
 
 #include <arpa/inet.h>
+#include <limits>
 
 namespace bgp_msg {
 
@@ -50,21 +51,62 @@ MPUnReachAttr::~MPUnReachAttr() {
  */
 void MPUnReachAttr::parseUnReachNlriAttr(int attr_len, u_char *data, bgp_msg::UpdateMsg::parsed_update_data &parsed_data) {
     mp_unreach_nlri nlri;
+    
+    /*
+     * Validate attr_len is within reasonable bounds
+     */
+    if (attr_len < 0 || attr_len > 65535) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI attribute length is invalid (%d), skipping parse", peer_addr.c_str(), attr_len);
+        return;
+    }
+    
+    /*
+     * Minimum length check: AFI (2 bytes) + SAFI (1 byte) = 3 bytes
+     */
+    if (attr_len < 3) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI attribute length is too short (%d), skipping parse", peer_addr.c_str(), attr_len);
+        return;
+    }
+    
+    /*
+     * Validate data pointer is not NULL
+     */
+    if (data == NULL) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI data pointer is NULL, skipping parse", peer_addr.c_str());
+        return;
+    }
+    
+    int remaining_len = attr_len;
+    u_char *data_ptr = data;
+    
     /*
      * Set the MP Unreach NLRI struct
      */
-    // Read address family
-    memcpy(&nlri.afi, data, 2); data += 2; attr_len -= 2;
+    // Read address family - validate we have enough data
+    if (remaining_len < 2) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI insufficient data for AFI, skipping parse", peer_addr.c_str());
+        return;
+    }
+    memcpy(&nlri.afi, data_ptr, 2); 
+    data_ptr += 2; 
+    remaining_len -= 2;
     bgp::SWAP_BYTES(&nlri.afi);                     // change to host order
 
-    nlri.safi = *data++; attr_len--;                // Set the SAFI - 1 octet
-    nlri.nlri_data = data;                          // Set pointer position for nlri data
-    nlri.nlri_len = attr_len;                       // Remaining attribute length is for NLRI data
+    // Read SAFI - validate we have enough data
+    if (remaining_len < 1) {
+        LOG_NOTICE("%s: MP_UNREACH NLRI insufficient data for SAFI, skipping parse", peer_addr.c_str());
+        return;
+    }
+    nlri.safi = *data_ptr++; 
+    remaining_len--;                                // Set the SAFI - 1 octet
+    
+    nlri.nlri_data = data_ptr;                      // Set pointer position for nlri data
+    nlri.nlri_len = remaining_len;                  // Remaining attribute length is for NLRI data
 
     /*
-     * Make sure the parsing doesn't exceed buffer
+     * Validate remaining length is non-negative
      */
-    if (attr_len < 0) {
+    if (remaining_len < 0) {
         LOG_NOTICE("%s: MP_UNREACH NLRI data length is larger than attribute data length, skipping parse", peer_addr.c_str());
         return;
     }
